@@ -1,0 +1,259 @@
+#paste qt in console for pop-out plot, inline for plot in IDE
+'''
+%matplotlib qt
+%matplotlib inline
+'''
+from itertools import chain
+from array import array
+from typing import Union, Any
+
+import numpy as np
+import matplotlib
+import matplotlib.pyplot as plt
+#from matplotlib import colormaps as cmap
+import pandas as pd
+import pickle
+import re
+from scipy.io import savemat
+from scipy.io import loadmat
+
+folder_loc = r'/Users/pearls/Work/RSC_project/'
+which_animal = 'ToothMuch'  # {'Luke', 'Arwen', 'Tauriel', 'PreciousGrape', 'ToothMuch', 'MimosaPudica'}
+which_session = 'ob1'  # Luke: {session2chasing_solo == c2}, Arwen: {c1, c2, c4, OF1, OF2, OF1&OF2}, Tauriel: {c1, c2, c4, c5, OF1}, PreciousGrape: {c1,c2,ob1,ob2,of1,of2 }
+share_cells_with = 'of1&c1&c2&ob1&ob2'  # 'OF1&c1&c2&c4&c5' # only neurons that are shared across given sessions, '' if choosing all neurons {OF1&OF2} 'c1&ob1&c2&OF1&OF2&ob2'
+binsize = 0 # binsize in s, {0, 0.025, 0.050, 0.100}, 0 = same as recording, ie. 8ms ish
+have_bait_marker = True
+filter_which_channels = 'RSC'  # {'RSC', 'SC', 'ALL'}
+
+
+# Define RSC and SC channel ranges for each animal
+channel_ranges = {
+    'Arwen': {'RSC': range(124, 385), 'SC': range(0, 124)},
+    'Tauriel': {'RSC': range(190, 385), 'SC': range(0, 190)},
+    'PreciousGrape': {'RSC': range(84, 250), 'SC': range(252, 385)},
+    'ToothMuch': {'RSC': set(range(0, 156)).union(set(range(266, 385))), 'SC': range(190, 266)},
+    'MimosaPudica':{'RSC': set(range(0, 176)).union(set(range(285, 385))), 'SC': range(179,284)},
+}
+# Convert to list if needed
+toothmuch_rsc_list = list(channel_ranges['ToothMuch']['RSC'])
+print(toothmuch_rsc_list)  # Outputs all RSC channels for ToothMuch
+# infile = open(r'/Users/martibma/Documents/Pearl_data_code_stuff/rm_pre_data_session1chasing_XYZeuler_notricks_eo.pkl', 'rb')
+# infile = open(r'/Users/martibma/Documents/Pearl_data_code_stuff/rm_pre_data_chasing_merge_XYZeuler_notricks_eo.pkl', 'rb')
+# infile = open(r'/Users/martibma/Documents/Pearl_data_code_stuff/rm_pre_data_session2chasing_solo_XYZeuler_notricks_eo.pkl', 'rb')
+
+if '&' in share_cells_with:
+    infile_list = []
+    for elem in share_cells_with.rsplit('&'):
+        infile_path = folder_loc + 'Data/' + which_animal + '/rm_pre_data_' + elem + '_XYZeuler_notricks_eo.pkl'
+        infile_list.append(infile_path)
+    infile_path = folder_loc + 'Data/' + which_animal + '/rm_pre_data_' + which_session + '_XYZeuler_notricks_eo.pkl'
+    infile_list.remove(infile_path)
+    infile = open(infile_path, 'rb')
+    data = pickle.load(infile)
+    cell_names = data['cell_names']
+    shared_cells = set(cell_names)
+    print("Starting with", re.search('(data_).*?(_XYZ)', infile_path).group(0)[5:-4], "there are", len(shared_cells),
+          "cells")
+
+    for elem in infile_list:
+        infile_ = open(elem, 'rb')
+        data_ = pickle.load(infile_)
+        cell_names_ = data_['cell_names']
+        shared_cells = shared_cells.intersection(set(cell_names_))
+        print("After including", re.search('(data_).*?(_XYZ)', elem).group(0)[5:-4], "there are", len(shared_cells),
+              "shared cells")
+    cell_names = sorted(shared_cells)
+
+    frame_times = data['frame_times']
+    time_bins = data['time_bins']
+    spike_times = data['cell_activities']
+    position = data['animal_location'][:, :2]
+
+    if have_bait_marker:
+        bait_pos_mat = loadmat(folder_loc + 'Data/' + which_animal + '/reward_' + which_session + '.mat')
+
+
+else:
+    infile_path = folder_loc + 'Data/' + which_animal + '/rm_pre_data_' + which_session + '_XYZeuler_notricks_eo.pkl'
+    infile = open(infile_path, 'rb')
+    if have_bait_marker:
+        bait_pos_mat = loadmat(folder_loc + 'Data/' + which_animal + '/reward_' + which_session + '.mat')
+    data = pickle.load(infile)
+    frame_times = data['frame_times']
+    time_bins = data['time_bins']
+    spike_times = data['cell_activities']
+    position = data['animal_location'][:, :2]
+    cell_names = data['cell_names']
+    # covariates we care about
+head_angles = (data['possiblecovariates']['D Allo_head_direction'])  # degrees
+head_angles_ders = data['possiblecovariates']['D Allo_head_direction_1st_der']  # degrees pr sec
+speeds = data['possiblecovariates']['B Speeds']  # cm pr sec
+neck_elevs = data['possiblecovariates']['G Neck_elevation']  # cm
+head_azimuths = data['possiblecovariates']['R Ego2_head_azimuth']  # degrees
+head_azimuths_ders = data['possiblecovariates']['R Ego2_head_azimuth_1st_der']  # degrees pr sec
+body_dir = data['possiblecovariates']['C Body_direction']  # degrees
+if which_session == 'session2chasing_solo' or which_session == 'c1' or which_session == 'c2' or which_session == 'c3' or which_session == 'noc1' or which_session == 'noc2' or which_session == 'noc3' or which_session == 'ob1' or which_session == 'ob2':
+    # only available during chasing sessions
+    rel_head_angles = data['possiblecovariates']['S Relative_head_angle']  # degrees
+    rel_dist = data['possiblecovariates']['T Relative_distance']  # cm
+    if have_bait_marker:
+        bait_pos = bait_pos_mat['reward_marker'][:, :2]  # cm?
+
+starttime = min(data['frame_times'])
+tracking_interval = np.mean(data['frame_times'][1:] - data['frame_times'][:(-1)])
+if binsize == 0:  # using framerate binsize
+    binsize = tracking_interval
+nbins = int(np.ceil(len(data['frame_times']) / (binsize / tracking_interval)))
+
+if '&' in share_cells_with:
+    print("Putting spikes in bins and making a matrix of it...")
+    binnedspikes = np.zeros((len(shared_cells), nbins))
+    i = 0
+    for cell in cell_names:
+        cell_index = (data['cell_names'].index(cell))
+        spikes = np.ravel(spike_times[cell_index])
+        spikes = spikes - starttime
+        for j in range(len(spikes)):
+            timebin = int(np.floor((spikes[j]) / float(binsize)))
+            binnedspikes[i, timebin] += 1  # add a spike to the thing
+        i += 1
+else:  # this one might be redundant now
+    print("Putting spikes in bins and making a matrix of it...")
+    binnedspikes = np.zeros((len(spike_times), nbins))
+    for i in range(len(spike_times)):
+        spikes = np.ravel(spike_times[i])
+        spikes = spikes - starttime
+        for j in range(len(spikes)):
+            timebin = int(np.floor((spikes[j]) / float(binsize)))
+            binnedspikes[i, timebin] += 1  # add a spike to the thing
+print("Done")
+
+if filter_which_channels == 'RSC':
+    print("Filtering RSC channels")
+    if which_animal not in channel_ranges:
+        raise ValueError(f"Unknown animal: {which_animal}")
+
+    rsc_range = channel_ranges[which_animal]['RSC']
+
+    # Filter to keep only RSC channels
+    idx_list = [
+        i for i, cell in enumerate(cell_names)
+        if int(re.search('ch(\\d+)', cell).group(1)) not in rsc_range
+    ]
+
+elif filter_which_channels == 'SC':
+    print("Filtering SC channels")
+    if which_animal not in channel_ranges:
+        raise ValueError(f"Unknown animal: {which_animal}")
+
+    sc_range = channel_ranges[which_animal]['SC']
+
+    # Filter to keep only SC channels
+    idx_list = [
+        i for i, cell in enumerate(cell_names)
+        if int(re.search('ch(\\d+)', cell).group(1)) not in sc_range
+    ]
+
+else:
+    raise ValueError(f"Unknown filter type: {filter_which_channels}")
+
+# Apply the filtering
+binnedspikes = np.delete(binnedspikes, idx_list, axis=0)
+old_len = len(cell_names)
+cell_names = list(np.delete(np.array(cell_names), idx_list, axis=0))
+
+print(f"Filtering done, {len(cell_names)} neurons out of {old_len} are from {filter_which_channels}")
+
+# print("Binning head direction and position as well..")
+print("Binning chosen covariates..")
+# bin head_angles and position as well
+mean_across = int(np.floor(binsize / tracking_interval))
+# make radians
+hd = np.radians(head_angles)
+ha = np.radians(head_azimuths)
+bd = np.radians(body_dir)
+if which_session == 'session2chasing_solo' or which_session == 'c1' or which_session == 'c2' or which_session == 'c3' or which_session == 'noc1' or which_session == 'noc2' or which_session == 'noc3'or which_session == 'ob1' or which_session == 'ob2':
+    rha = np.radians(rel_head_angles)
+
+binnedhd = np.zeros(nbins)
+binnedhdder = np.zeros(nbins)
+binnedspeed = np.zeros(nbins)
+binnedne = np.zeros(nbins)
+binnedha = np.zeros(nbins)
+binnedhader = np.zeros(nbins)
+binnedpos = np.zeros((nbins, 2))
+binnedbd = np.zeros(nbins)
+binnedrbd = np.zeros(nbins)
+binnedbdhd = np.zeros(nbins)
+if which_session == 'session2chasing_solo' or which_session == 'c1' or which_session == 'c2' or which_session == 'c3' or which_session == 'noc1' or which_session == 'noc2' or which_session == 'noc3' or which_session == 'ob1' or which_session == 'ob2':
+    binnedrha = np.zeros(nbins)
+    binnedrd = np.zeros(nbins)
+    if have_bait_marker:
+        binnedbpos = np.zeros((nbins, 2))
+for i in range(nbins):
+    cos_mean = (np.cos(hd[mean_across * i:mean_across * (i + 1)]))
+    sin_mean = (np.sin(hd[mean_across * i:mean_across * (i + 1)]))
+    hd_mean = np.arctan2(sin_mean, cos_mean)
+    binnedhd[i] = np.nanmean(hd_mean)
+
+    binnedhdder[i] = np.nanmean(
+        head_angles_ders[mean_across * i:mean_across * (i + 1)]) * 0.017453  # degrees pr sec -> radians pr sec
+
+    binnedspeed[i] = np.nanmean(speeds[mean_across * i:mean_across * (i + 1)])
+
+    binnedne[i] = np.nanmean(neck_elevs[mean_across * i:mean_across * (i + 1)])
+
+    cos_mean = (np.cos(ha[mean_across * i:mean_across * (i + 1)]))
+    sin_mean = (np.sin(ha[mean_across * i:mean_across * (i + 1)]))
+    ha_mean = np.arctan2(sin_mean, cos_mean)
+    binnedha[i] = np.nanmean(ha_mean)
+
+    binnedhader[i] = np.nanmean(
+        head_azimuths_ders[mean_across * i:mean_across * (i + 1)]) * 0.017453  # degrees pr sec -> radians pr sec
+
+    binnedpos[i, 0] = np.nanmean(position[mean_across * i:mean_across * (i + 1), 0])
+    binnedpos[i, 1] = np.nanmean(position[mean_across * i:mean_across * (i + 1), 1])
+
+    cos_mean = (np.cos(bd[mean_across * i:mean_across * (i + 1)]))
+    sin_mean = (np.sin(bd[mean_across * i:mean_across * (i + 1)]))
+    bd_mean = np.arctan2(sin_mean, cos_mean)
+    binnedbd[i] = np.nanmean(bd_mean)
+
+    bdhd1 = bd[mean_across * i:mean_across * (i + 1)] - hd[mean_across * i:mean_across * (i + 1)]
+    bdhd2 = bd[mean_across * i:mean_across * (i + 1)] - hd[mean_across * i:mean_across * (i + 1)] + 2 * np.pi
+    bdhd3 = bd[mean_across * i:mean_across * (i + 1)] - hd[mean_across * i:mean_across * (i + 1)] - 2 * np.pi
+    bdhd_mean = np.nanmin(np.concatenate((bdhd1[:, None], bdhd2[:, None]), axis=1), axis=1)
+    bdhd_mean = np.nanmin(np.concatenate((bdhd_mean[:, None], bdhd3[:, None]), axis=1), axis=1)
+    binnedbdhd[i] = np.nanmean(bdhd_mean)
+
+    if which_session == 'session2chasing_solo' or which_session == 'c1' or which_session == 'c2' or which_session == 'c3' or which_session == 'noc1' or which_session == 'noc2' or which_session == 'noc3' or which_session == 'ob1' or which_session == 'ob2':
+        cos_mean = (np.cos(rha[mean_across * i:mean_across * (i + 1)]))
+        sin_mean = (np.sin(rha[mean_across * i:mean_across * (i + 1)]))
+        rha_mean = np.arctan2(sin_mean, cos_mean)
+        binnedrha[i] = np.nanmean(rha_mean)
+
+        binnedrd[i] = np.nanmean(rel_dist[mean_across * i:mean_across * (i + 1)])
+
+        if have_bait_marker:
+            binnedbpos[i, 0] = np.nanmean(bait_pos[mean_across * i:mean_across * (i + 1), 0])
+            binnedbpos[i, 1] = np.nanmean(bait_pos[mean_across * i:mean_across * (i + 1), 1])
+
+print("Done")
+spikedic = {"spikemat": binnedspikes, "binsize": str(int(binsize * 1000)) + "ms", "cell_names": cell_names,
+            "binned_hd": binnedhd, "binned_hd_der": binnedhdder,
+            "binned_speed": binnedspeed, "binned_ne": binnedne, "binned_ha": binnedha, "binned_ha_der": binnedhader,
+            "binned_pos": binnedpos}
+if which_session == 'session2chasing_solo' or which_session == 'c1' or which_session == 'c2' or which_session == 'c3' or which_session == 'noc1' or which_session == 'noc2' or which_session == 'noc3' or which_session == 'ob1' or which_session == 'ob2':
+    spikedic['binned_rel_ha'] = binnedrha
+    spikedic['binned_rel_dist'] = binnedrd
+    if have_bait_marker:
+        spikedic['binned_bait_pos'] = binnedbpos
+
+if '&' in share_cells_with:
+    outfile_path = folder_loc + 'Data/' + which_animal + '/' + filter_which_channels + '_' + which_session + '_binnedshareddata' + str(
+        int(binsize * 1000)) + 'ms.mat'
+else:
+    outfile_path = folder_loc + 'Data/' + which_animal + '/' + filter_which_channels + '_' + which_session + '_binneddata' + str(
+        int(binsize * 1000)) + 'ms.mat'
+savemat(outfile_path, spikedic)
+savemat("/Users/pearls/Work/RSC_project/" + which_session + "_binnedsharedspikes"+str(int(binsize*1000))+"ms.mat", spikedic)
