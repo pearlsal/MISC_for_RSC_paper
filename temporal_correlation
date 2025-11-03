@@ -1,0 +1,245 @@
+import numpy as np
+import os
+import scipy.io
+import scipy.stats
+import matplotlib.pyplot as plt
+#############################################################################################################################
+#########################1. Converting Spike Trains to Firing Rates############################################
+#############################################################################################################################
+# Assuming data['spikemat'] is a 2D NumPy array with each row representing a neuron
+def convert_to_firing_rate(spike_times, bin_width=0.15):  # 100ms bins
+    if not np.any(spike_times):  # Check if spike_times is empty or all zeros
+        return np.array([]), np.array([])
+
+    #end_time = np.size((spike_times))*0.008
+    #print('spike times',spike_times)
+
+    time_per_index = 0.008  # 8ms
+    total_time = np.size(spike_times) * time_per_index
+    bins = np.arange(0, total_time, bin_width)
+
+    # Converting index-based spike times to actual time-based spike times
+    actual_spike_times = np.where(spike_times == 1)[0] * time_per_index
+
+    hist, _ = np.histogram(actual_spike_times, bins=bins)
+    print(hist)
+    firing_rate = hist / bin_width
+    print('hist', hist)
+    print(bins)
+    print('firing rate', firing_rate)
+    print(bin_width)
+    print('spike times', spike_times)
+    return firing_rate, bins
+
+mat_file_chase = '/Users/pearls/PycharmProjects/Ratemaps/Chasing_conc_filtered.mat'
+mat_file_OF = '/Users/pearls/PycharmProjects/Ratemaps/OF_cbout_conc_filtered.mat'
+data_chase = scipy.io.loadmat(mat_file_chase)
+data_OF = scipy.io.loadmat(mat_file_OF)
+spike_trains_chasing = data_chase['spikemat']
+spike_trains_OF = data_OF['spikemat']
+#firing_rates = convert_to_firing_rate(spike_trains[9,:], bin_width=0.025)
+
+firing_rates_chasing = {f'neuron_{i}': convert_to_firing_rate(spike_trains_chasing[i, :]) for i in range(spike_trains_chasing.shape[0])}
+firing_rates_OF = {f'neuron_{i}': convert_to_firing_rate(spike_trains_OF[i, :]) for i in range(spike_trains_OF.shape[0])}
+
+
+#############################################################################################################################
+#########2. Identifying Time Points for OF and Chasing  ################################################################
+
+
+# Assuming firing_rates_of and firing_rates_chasing are dictionaries
+# with keys as neuron identifiers and values as their firing rates under OF and Chasing conditions
+# Example: firing_rates_of = {'neuron1': array_of_firing_rates, 'neuron2': array_of_firing_rates, ...}
+
+def compute_cross_correlation(rate1, rate2):
+    # Check if the input arrays have the same length
+    if len(rate1) != len(rate2):
+        print('Error: The input arrays must have the same length.')
+        return None  # Exit the function as the arrays must be of the same length
+
+    # Normalize the rates by subtracting the mean and dividing by the standard deviation
+    norm_rate1 = (rate1 - np.mean(rate1)) / np.std(rate1)
+    norm_rate2 = (rate2 - np.mean(rate2)) / np.std(rate2)
+
+    # Initialize an empty list to store correlation values for each lag
+    correlation_values = []
+
+    # Compute the cross-correlation for each lag
+    for i in range(-70, 71):
+        if i < 0:
+            T1 = norm_rate1[-i:]
+            T2 = norm_rate2[:len(norm_rate2) + i]
+        elif i > 0:
+            T1 = norm_rate1[:len(norm_rate1) - i]
+            T2 = norm_rate2[i:]
+        else:  # i == 0
+            T1 = norm_rate1
+            T2 = norm_rate2
+
+        # Compute correlation for the current lag
+        if len(T1) == 0 or len(T2) == 0:  # Avoid empty array correlation error
+            correlation_values.append(0)
+        else:
+            correlation = np.corrcoef(T1, T2)[0, 1]
+            correlation_values.append(correlation)
+
+    return np.array(correlation_values)
+
+    # Pad both arrays to the same length
+    #rate1_padded = np.pad(rate1, (0, max_length - len(rate1)), 'constant', constant_values=(0, 0))
+    #rate2_padded = np.pad(rate2, (0, max_length - len(rate2)), 'constant', constant_values=(0, 0))
+    #correlation = np.correlate(rate1, rate2, mode='full')
+    #return np.correlate(firing_rate_i - np.mean(firing_rate_i), firing_rate_j - np.mean(firing_rate_j), mode='full') / (
+    #            np.std(firing_rate_i) * np.std(firing_rate_j) * len(firing_rate_i))
+    # Compute cross-correlation
+    #return correlation
+
+
+# Iterate over each pair of neurons and compute cross-correlations
+results_of = {}
+results_chasing = {}
+neurons = np.array(list(firing_rates_OF.keys()))
+ebc_list = neurons[[21, 24, 26, 27, 28, 29, 32, 35, 36, 38, 47, 55]]
+for i in range(len(ebc_list)):
+    for j in range(i+1, len(ebc_list)):
+        neuron_i, neuron_j = ebc_list[i], ebc_list[j]
+        pair_key = f'{neuron_i}-{neuron_j}'
+
+        # Extract only the firing rate part of the tuple
+        firing_rate_i_of = firing_rates_OF[neuron_i][0]
+        print('firing_rate_i_of', firing_rate_i_of)
+        firing_rate_j_of = firing_rates_OF[neuron_j][0]
+        print('firing_rate_j_of', firing_rate_j_of)
+        firing_rate_i_chasing = firing_rates_chasing[neuron_i][0]
+        firing_rate_j_chasing = firing_rates_chasing[neuron_j][0]
+
+        # Compute for OF
+        corr_of = compute_cross_correlation(firing_rate_i_of, firing_rate_j_of)
+        results_of[pair_key] = corr_of
+
+        # Compute for Chasing
+        corr_chasing = compute_cross_correlation(firing_rate_i_chasing, firing_rate_j_chasing)
+        results_chasing[pair_key] = corr_chasing
+
+# Plotting the results
+def plot_correlations(results, title):
+    plt.figure(figsize=(15, 10))
+    for pair_key, correlation in results.items():
+        plt.plot(correlation, label=pair_key)
+    plt.title(title)
+    plt.xlabel('Temporal Offset')
+    plt.ylabel('Cross-Correlation')
+    plt.legend()
+    plt.show()
+
+plot_correlations(results_of, 'Cross-Correlation Among Neurons - OF Condition')
+plot_correlations(results_chasing, 'Cross-Correlation Among Neurons - Chasing Condition')
+
+
+
+
+
+# Example usage
+def plot_individual_correlations(results, condition, save_path='plots/', window_size=400):
+    """
+    Plots and saves individual cross-correlation graphs for each neuron pair under a specified condition,
+    focusing on a specified window around zero lag.
+
+    Parameters:
+    - results: Dictionary containing the cross-correlation results.
+    - condition: String indicating the condition ('OF' or 'Chasing').
+    - save_path: Base directory where plots will be saved.
+    - window_size: Number of bins to include on each side of zero lag.
+    """
+
+    # Ensure the save directory exists
+    os.makedirs(save_path, exist_ok=True)
+
+    for pair_key, correlation in results.items():
+        # Focus on the specified window around zero lag
+        midpoint = len(correlation) // 2
+        offsets = np.arange(-window_size, window_size + 1)
+        focused_correlation = correlation[midpoint - window_size:midpoint + window_size + 1]
+
+        # Create a new plot for each pair
+        plt.figure(figsize=(10, 4))
+        plt.plot(offsets, focused_correlation, label=f'Neurons {pair_key}')
+        print(pair_key)
+        print (type(pair_key))
+        plt.title(f'Cross-Correlation {pair_key} - {condition}')
+        plt.xlabel('Temporal Offset (bins)')
+        plt.ylabel('Cross-Correlation Value')
+        plt.legend()
+        plt.grid(True)
+
+        # Construct the filename
+        filename = os.path.join(save_path, f"{pair_key.replace('-', '_')}_condition_{condition.replace(' ', '_')}.png")
+
+        # Save the figure
+        plt.savefig(filename)
+
+        # Optionally, display the plot as well
+        plt.show()
+
+        # Close the plot to free memory
+        plt.close()
+
+
+plot_individual_correlations(results_of, 'OF Condition')
+plot_individual_correlations(results_chasing, 'Chasing Condition')
+
+
+def plot_combined_correlations(results_of, results_chasing, save_path='plots/', window_size=70):
+    """
+    Plots and saves combined cross-correlation graphs for each neuron pair under both 'OF' and 'Chasing' conditions,
+    focusing on a specified window around zero lag.
+
+    Parameters:
+    - results_of: Dictionary containing the cross-correlation results for the 'OF' condition.
+    - results_chasing: Dictionary containing the cross-correlation results for the 'Chasing' condition.
+    - save_path: Base directory where plots will be saved.
+    - window_size: Number of bins to include on each side of zero lag.
+    """
+
+    # Ensure the save directory exists
+    os.makedirs(save_path, exist_ok=True)
+
+    # Iterate over each pair key in the 'OF' condition results
+    for pair_key in results_of:
+        if pair_key in results_chasing:  # Ensure the pair exists in both conditions
+            correlation_of = results_of[pair_key]
+            correlation_chasing = results_chasing[pair_key]
+
+            # Calculate midpoint and offsets for plotting
+            midpoint = len(correlation_of) // 2
+            offsets = np.arange(-window_size, window_size + 1)
+
+            # Focus on the specified window around zero lag for both conditions
+            focused_correlation_of = correlation_of[midpoint - window_size:midpoint + window_size + 1]
+            focused_correlation_chasing = correlation_chasing[midpoint - window_size:midpoint + window_size + 1]
+
+            # Create a new plot for the pair
+            plt.figure(figsize=(10, 4))
+            plt.plot(offsets, focused_correlation_of, label='OF Condition', color='blue')
+            plt.plot(offsets, focused_correlation_chasing, label='Chasing Condition', color='red')
+            plt.title(f'Cross-Correlation {pair_key} - Combined Conditions')
+            plt.xlabel('Temporal Offset (bins)')
+            plt.ylabel('Cross-Correlation Value')
+            plt.legend()
+            plt.grid(True)
+
+            # Construct the filename
+            filename = os.path.join(save_path, f"{pair_key.replace('-', '_')}_combined_conditions.png")
+
+            # Save the figure
+            plt.savefig(filename)
+
+            # Optionally, display the plot as well
+            plt.show()
+
+            # Close the plot to free memory
+            plt.close()
+
+
+# Assuming results_of and results_chasing are your dictionaries containing the cross-correlation results
+plot_combined_correlations(results_of, results_chasing)
